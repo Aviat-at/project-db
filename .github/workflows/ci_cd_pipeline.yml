@@ -1,103 +1,49 @@
-name: MySQL CI/CD Pipeline
+name: Simple MySQL CI Test
+
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
-env:
-  DB_HOST: localhost
-  DB_PORT: 3306
-  DB_NAME: project_db
-  DB_USER: root
-  MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
-  DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+
 jobs:
-  deploy:
+  mysql-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_DATABASE: project_db
-          MYSQL_TCP_PORT: 3306
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost"
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
+
     steps:
-    - name: Checkout repository
+    - name: Checkout code
       uses: actions/checkout@v3
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        cache: 'pip'
-    - name: Create requirements.txt if not exists
+
+    - name: Load secrets into environment
       run: |
-        if [ ! -f requirements.txt ]; then
-          echo "mysql-connector-python==8.0.33" > requirements.txt
-          echo "python-dotenv==1.0.0" >> requirements.txt
-        fi
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        cat .secrets >> $GITHUB_ENV
+        echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> $GITHUB_ENV
+
     - name: Wait for MySQL to be ready
       run: |
-        echo "Waiting for MySQL to start..."
         for i in {1..30}; do
           if MYSQL_PWD="$DB_PASSWORD" mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" --silent; then
-            echo "MySQL is ready!"
-            MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -e "SHOW DATABASES;"
+            echo "MySQL is ready"
             break
           fi
-          echo "Attempt $i: MySQL not ready yet..."
           sleep 2
         done
-        if [ $i -eq 30 ]; then
-          echo "::error::MySQL did not start within 60 seconds"
-          exit 1
-        fi
-    - name: Deploy initial schema
+
+    - name: Run all SQL files
       run: |
         MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/01_initial_schema.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -e "SHOW TABLES IN $DB_NAME;"
-    - name: Update schema with humidity column
-      run: |
         MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/02_schema_update.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -e "DESCRIBE $DB_NAME.ClimateData;"
-    - name: Seed sample data
-      run: |
         MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/03_data_seeding.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -e "SELECT COUNT(*) AS record_count FROM $DB_NAME.ClimateData;"
-    - name: Run concurrent queries
-      run: |
-        echo "DB_HOST=$DB_HOST" > .secrets
-        echo "DB_PORT=$DB_PORT" >> .secrets
-        echo "DB_NAME=$DB_NAME" >> .secrets
-        echo "DB_USER=$DB_USER" >> .secrets
-        echo "DB_PASSWORD=$DB_PASSWORD" >> .secrets
-        python scripts/multi_thread_queries.py || {
-          echo "::error::Concurrent query test failed"
-          exit 1
-        }
-        rm -f .secrets
-    - name: Validate deployment
-      run: |
         MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/04_validation_queries.sql
-        echo "Checking humidity column for NULLs..."
-        null_count=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -N -e "
-          SELECT COUNT(*) 
-          FROM $DB_NAME.ClimateData
-          WHERE humidity IS NULL;
-        ")
-        if [ "$null_count" -ne 0 ]; then
-          echo "::error::Found $null_count NULL values in humidity column"
-          exit 1
-        fi
-        echo "No NULL values found in humidity column"

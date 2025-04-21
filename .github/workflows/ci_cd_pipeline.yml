@@ -1,11 +1,11 @@
-name: DB-project-test
+name: Secure MySQL CI/CD Pipeline
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  mysql-test:
+  mysql-ci:
     runs-on: ubuntu-latest
 
     services:
@@ -14,6 +14,8 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: ${{ secrets.DB_PASSWORD }}
           MYSQL_DATABASE: project_db
+          MYSQL_USER: project_user
+          MYSQL_PASSWORD: ${{ secrets.DB_PASSWORD }}
         ports:
           - 3306:3306
         options: >-
@@ -22,28 +24,64 @@ jobs:
           --health-timeout=5s
           --health-retries=5
 
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: project_db
+      DB_USER: project_user
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Load secrets into environment
+    - name: Install Python and MySQL client
       run: |
-        cat .secrets >> $GITHUB_ENV
-        echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> $GITHUB_ENV
+        sudo apt-get update
+        sudo apt-get install -y mysql-client
+        sudo apt-get install -y python3-pip
+
+    - name: Install Python requirements
+      run: |
+        if [ ! -f requirements.txt ]; then
+          echo "mysql-connector-python==8.0.33" > requirements.txt
+          echo "python-dotenv==1.0.0" >> requirements.txt
+        fi
+        pip install -r requirements.txt
 
     - name: Wait for MySQL to be ready
       run: |
+        echo "Waiting for MySQL..."
         for i in {1..30}; do
           if MYSQL_PWD="$DB_PASSWORD" mysqladmin ping -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" --silent; then
-            echo "MySQL is ready"
+            echo "MySQL is ready!"
             break
           fi
           sleep 2
         done
+        if [ $i -eq 30 ]; then
+          echo "::error::MySQL did not start in time"
+          exit 1
+        fi
 
-    - name: Run all SQL files
+    - name: Run DB schema, seed, and validate
       run: |
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/01_initial_schema.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/02_schema_update.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/03_data_seeding.sql
-        MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" < sql/04_validation_queries.sql
+        MYSQL_CMD="MYSQL_PWD=\"$DB_PASSWORD\" mysql -h\"$DB_HOST\" -P\"$DB_PORT\" -u\"$DB_USER\" \"$DB_NAME\""
+
+        echo "Applying schema..."
+        eval $MYSQL_CMD < sql/01_initial_schema.sql
+        eval $MYSQL_CMD < sql/02_schema_update.sql
+
+        echo "Seeding data..."
+        eval $MYSQL_CMD < sql/03_data_seeding.sql
+
+        echo "Running validation..."
+        eval $MYSQL_CMD < sql/04_validation_queries.sql
+
+        echo "Checking for NULL humidity values..."
+        null_count=$(eval $MYSQL_CMD -N -e "SELECT COUNT(*) FROM ClimateData WHERE humidity IS NULL;")
+        if [ "$null_count" -ne 0 ]; then
+          echo "::error::Found $null_count NULL humidity values"
+          exit 1
+        fi
+        echo "Data integrity passed"

@@ -1,4 +1,4 @@
-name: Simple MySQL CI Test
+name: DB-project-test
 
 on:
   push:

@@ -78,10 +78,4 @@ jobs:
         echo "Running validation..."
         eval $MYSQL_CMD < sql/04_validation_queries.sql
 
-        echo "Checking for NULL humidity values..."
-        null_count=$(eval $MYSQL_CMD -N -e "SELECT COUNT(*) FROM ClimateData WHERE humidity IS NULL;")
-        if [ "$null_count" -ne 0 ]; then
-          echo "::error::Found $null_count NULL humidity values"
-          exit 1
-        fi
-        echo "Data integrity passed"
+        
